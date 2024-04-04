@@ -1,3 +1,6 @@
 [submodule "evaluating-verifiability-in-generative-search-engines"]
 	path = evaluating-verifiability-in-generative-search-engines
 	url = https://github.com/nelson-liu/evaluating-verifiability-in-generative-search-engines.git
+[submodule "transformers"]
+	path = transformers
+	url = https://github.com/huggingface/transformers.git
