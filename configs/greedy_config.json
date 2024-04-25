@@ -1,0 +1,7 @@
+{
+    "num_beams": 1,
+    "do_sample": false,
+    "top_p": null,
+    "temperature": null,
+    "return_dict_in_generate": true
+}

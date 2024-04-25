@@ -1,0 +1,31 @@
+program: scripts/summarization/run_selfcad.py
+name: xsum-llama2-chat-self_cad_all_token
+method: grid
+parameters:
+  cad_alpha:
+    values: [0.5, 1.0, 2.0]
+  cad_beta:
+    values: [0.0000001, 0.25, 0.5, 0.75, 0.9]
+command:
+- "python"
+- ${program}
+- ${args}
+- "--model_nm"
+- "llama2-chat"
+- "--dataset_nm"
+- "xsum"
+- "--decoding_algo"
+- "self_cad_all_token"
+- "--generation_config"
+- "configs/topp_config.json"
+- "--output_dir"
+- "/home/ameya/grounded-decoding/outputs/xsum/"
+- "--n_samples"
+- "250"
+- "--shuffle_seed"
+- "1904"
+- "--topp"
+- "0.9"
+- "--temperature"
+- "1.0"
+- "--log_wandb"
