@@ -1,13 +1,11 @@
-program: scripts/summarization/run_selfcad.py
-name: xsum-llama2-chat-self_cad-kv_sharing_total-js
-method: random
+program: scripts/summarization/run_headmask.py
+name: xsum-llama2-chat-cad_head_mask-kv_sharing_total
+method: grid
 parameters:
   cad_alpha:
-    values: [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 4.0, 8.0]
-  cad_beta:
-    distribution: log_uniform_values
-    min: 0.0000001
-    max: 1.0
+    values: [8.0, 4.0, 2.0, 1.5, 1.0, 0.75, 0.5, 0.25]
+  mask_topk:
+    values: [500, 400, 300, 200, 100, 75, 50, 30, 15, 10, 5, 1]
 command:
 - "python"
 - ${program}
@@ -17,13 +15,15 @@ command:
 - "--dataset_nm"
 - "xsum"
 - "--decoding_algo"
-- "self_cad_all_token"
+- "cad_head_mask"
 - "--generation_config"
 - "configs/topp_config.json"
 - "--output_dir"
 - "/home/ameya/grounded-decoding/outputs/xsum/"
 - "--cad_kv_sharing"
 - "total"
+- "--head_score_file"
+- "configs/retrieval_head_score/llama-2-7b-80k.json"
 - "--return_js_divergence"
 - "--n_samples"
 - "250"
