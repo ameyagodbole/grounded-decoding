@@ -11,7 +11,7 @@ from tqdm import trange
 from transformers import AutoTokenizer
 from evaluate import load
 import wandb
-from src.contrastive_llama import LlamaTokenTypeAttnForCausalLM
+from src.head_mask_llama import LlamaHeadMaskForCausalLM
 
 
 logging.basicConfig(
@@ -25,7 +25,7 @@ MODEL_MAP = {"llama2-chat": "meta-llama/Llama-2-7b-chat-hf"}
 PROMPT_MAP = {("llama2-chat", "nq"): ["""[INST] <<SYS>> Give the answer to the user question based on the provided HTML passage. Output just the answer span.<</SYS>>""",
                                       """{}""",
                                       """Question: {} [/INST] Answer:"""],
-              ("llama2-chat", "nq-swap"): ["""[INST] <<SYS>> Give the answer to the user question based on the provided HTML passage. Output just the answer span.<</SYS>>""",
+                ("llama2-chat", "nq-swap"): ["""[INST] <<SYS>> Give the answer to the user question based on the provided HTML passage. Output just the answer span.<</SYS>>""",
                                       """{}""",
                                       """Question: {} [/INST] Answer:"""]}
 
@@ -73,7 +73,15 @@ def main(args):
     if args.log_wandb:
         wandb.config.update(accl_args)
 
-    model = LlamaTokenTypeAttnForCausalLM.from_pretrained(MODEL_MAP[args.model_nm], **accl_args)
+    model = LlamaHeadMaskForCausalLM.from_pretrained(MODEL_MAP[args.model_nm], **accl_args)
+    if args.decoding_algo == "cad_head_mask":
+        with open(args.head_score_file, "r") as file:
+            stable_block_list =  json.loads(file.readline())
+        stable_block_list = [(l[0], np.mean(l[1])) for l in stable_block_list.items()]
+        stable_block_list = sorted(stable_block_list, key=lambda x: x[1], reverse=True)
+        block_list = [[int(ll) for ll in l[0].split("-")] for l in stable_block_list][:args.mask_topk]
+    else:
+        block_list = None
 
     def tokenize_one_query(one_query, tokenizer):
         tokenized_parts = tokenizer([PROMPT_FORMAT[0], '\n'+one_query["context"], '\n' + PROMPT_FORMAT[2].format(one_query['query'])])
@@ -109,12 +117,14 @@ def main(args):
             if args.return_js_divergence:
                 js_divergences = None
                 js_divergences_output = None
-        elif args.decoding_algo == "self_cad_all_token":
+        elif args.decoding_algo == "cad_head_mask":
             output = model.generate(one_tokenized_query_prompt['input_ids'].to(device),
                                     **gen_config, output_scores=args.output_scores, output_logits=args.output_logits,
-                                    context_attention_mask=one_tokenized_query_prompt['context_attention_mask'].to(device),
-                                    context_attention_weight=args.cad_beta, cad_alpha=args.cad_alpha,
-                                    cad_kv_sharing=args.cad_kv_sharing, return_js_divergence=args.return_js_divergence)
+                                    cad_alpha=args.cad_alpha, cad_kv_sharing=args.cad_kv_sharing,
+                                    return_js_divergence=args.return_js_divergence, block_list=block_list)
+            output_logits = {"logits": [tok_logits.to('cpu').tolist() for tok_logits in output.logits],
+                             "base_logits": [tok_logits.to('cpu').tolist() for tok_logits in output.base_logits],
+                             "perturbed_logits": [tok_logits.to('cpu').tolist() for tok_logits in output.perturbed_logits]}
             if args.output_scores:
                 output_scores = {"scores": [tok_scores.to('cpu').tolist() for tok_scores in output.scores]}
             if args.output_logits:
@@ -148,7 +158,7 @@ def main(args):
     if not os.path.isdir(args.output_dir):
         logger.info(f"Creating output dir: {args.output_dir}")
         os.makedirs(args.output_dir, exist_ok=True)
-    outfile_nm = os.path.join(args.output_dir, f"{args.model_nm}-{args.decoding_algo}{'-topk' + str(args.topk) if args.topk is not None else ''}{'-topp' + str(args.topp) if args.topp is not None else ''}{'-temp' + str(args.temperature) if args.temperature is not None else ''}{'-alpha' + str(args.cad_alpha) if args.cad_alpha is not None else ''}{'-beta' + str(args.cad_beta) if args.cad_beta is not None else ''}-n{args.n_samples or ''}-r{args.shuffle_seed or ''}.jsonl")
+    outfile_nm = os.path.join(args.output_dir, f"{args.model_nm}-{args.decoding_algo}{'-topk' + str(args.topk) if args.topk is not None else ''}{'-topp' + str(args.topp) if args.topp is not None else ''}{'-temp' + str(args.temperature) if args.temperature is not None else ''}{'-alpha' + str(args.cad_alpha) if args.cad_alpha is not None else ''}{'-mask_topk' + str(args.mask_topk) if args.mask_topk is not None else ''}-n{args.n_samples or ''}-r{args.shuffle_seed or ''}.jsonl")
     logger.info(f"Writing output to {outfile_nm}")
     with open(outfile_nm, 'w') as fout:
         out_str = '\n'.join([json.dumps(one_pred) for one_pred in all_predictions])
@@ -185,14 +195,14 @@ if __name__=='__main__':
 
     parser.add_argument("--model_nm", type=str, choices=["llama2", "llama2-chat"], default="llama2-chat")
     parser.add_argument("--dataset_nm", type=str, choices=["nq", "nq-swap"], required=True)
-    parser.add_argument("--decoding_algo", type=str, choices=["regular", "self_cad_all_token"], required=True)
+    parser.add_argument("--decoding_algo", type=str, choices=["regular", "cad_head_mask"], required=True)
     parser.add_argument("--generation_config", type=str, required=True)
     parser.add_argument("--data_file", type=str, required=True)
 
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--output_scores", action='store_true')
     parser.add_argument("--output_logits", action='store_true')
-    
+
     parser.add_argument("--n_samples", type=int, default=None)
     parser.add_argument("--shuffle_seed", type=int, default=None)
     parser.add_argument("--fp16", action='store_true')
@@ -200,8 +210,9 @@ if __name__=='__main__':
     
     # CAD PARAMS
     parser.add_argument("--cad_alpha", type=float, default=None)
-    parser.add_argument("--cad_beta", type=float, default=None)
-    parser.add_argument("--cad_kv_sharing", type=str, default=None)
+    parser.add_argument("--cad_kv_sharing", type=str, default="total")
+    parser.add_argument("--head_score_file", type=str, default="")
+    parser.add_argument("--mask_topk", type=int, default=None)
 
     # Analysis options
     parser.add_argument("--return_js_divergence", action='store_true')
