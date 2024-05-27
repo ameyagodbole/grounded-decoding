@@ -7,12 +7,12 @@ import os
 import random
 import torch
 from tqdm import trange
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer
 from datasets import load_dataset
 import evaluate
 import wandb
 from src.contrastive_llama import LlamaTokenTypeAttnForCausalLM
-
+from src.eval_utils import compute_factkb_score
 
 logging.basicConfig(
     format="%(asctime)s - %(module)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -29,23 +29,6 @@ PROMPT_MAP = {("llama2", "cnn_dailymail"): ["""Article: {}""", """\nSummarize th
               ("llama2", "xsum"): ["""Article: {}""", """Summarize the article in one sentence. Summary:"""],
               ("llama2-chat", "cnn_dailymail"): ["""[INST] <<SYS>> Summarize the article.<</SYS>>""", """{}""", """[/INST] Summary:"""],
               ("llama2-chat", "xsum"): ["""[INST] <<SYS>> Summarize the article in one sentence.<</SYS>>""", """{}""", """[/INST] Summary:"""]}
-
-
-def compute_factkb(predictions, articles, model_kwargs=None, batch_size=16):
-    inputs = [[pred, context] for pred, context in zip(predictions, articles)]
-
-    tokenizer = AutoTokenizer.from_pretrained("roberta-base", padding="max_length", truncation=True)
-    factkb = AutoModelForSequenceClassification.from_pretrained("bunsenfeng/FactKB", num_labels=2)
-
-    results = []
-    with torch.no_grad():
-        for bctr in range(int(np.ceil(len(inputs)/batch_size))):
-            batch_inputs = inputs[bctr*batch_size:(bctr+1)*batch_size]
-            tokens = tokenizer(batch_inputs, return_tensors="pt", padding="max_length", truncation=True)
-            result = torch.softmax(factkb(**tokens).logits, dim = 1)
-            results.extend(result[:,1].cpu().tolist())
-    
-    return {'factkb': np.mean(results)}
 
 
 def main(args):

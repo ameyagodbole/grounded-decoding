@@ -7,12 +7,12 @@ import os
 import random
 import torch
 from tqdm import trange
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer
 from datasets import load_dataset
 import evaluate
 import wandb
 from src.head_mask_llama import LlamaHeadMaskForCausalLM
-
+from src.eval_utils import compute_factkb_score
 
 logging.basicConfig(
     format="%(asctime)s - %(module)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -29,23 +29,6 @@ PROMPT_MAP = {("llama2", "cnn_dailymail"): ["""Article: {}""", """\nSummarize th
               ("llama2", "xsum"): ["""Article: {}""", """Summarize the article in one sentence. Summary:"""],
               ("llama2-chat", "cnn_dailymail"): ["""[INST] <<SYS>> Summarize the article.<</SYS>>""", """{}""", """[/INST] Summary:"""],
               ("llama2-chat", "xsum"): ["""[INST] <<SYS>> Summarize the article in one sentence.<</SYS>>""", """{}""", """[/INST] Summary:"""]}
-
-
-def compute_factkb(predictions, articles, model_kwargs=None, batch_size=16):
-    inputs = [[pred, context] for pred, context in zip(predictions, articles)]
-
-    tokenizer = AutoTokenizer.from_pretrained("roberta-base", padding="max_length", truncation=True)
-    factkb = AutoModelForSequenceClassification.from_pretrained("bunsenfeng/FactKB", num_labels=2)
-
-    results = []
-    with torch.no_grad():
-        for bctr in range(int(np.ceil(len(inputs)/batch_size))):
-            batch_inputs = inputs[bctr*batch_size:(bctr+1)*batch_size]
-            tokens = tokenizer(batch_inputs, return_tensors="pt", padding="max_length", truncation=True)
-            result = torch.softmax(factkb(**tokens).logits, dim = 1)
-            results.extend(result[:,1].cpu().tolist())
-    
-    return {'factkb': np.mean(results)}
 
 
 def main(args):
@@ -96,6 +79,14 @@ def main(args):
         wandb.config.update(accl_args)
 
     model = LlamaHeadMaskForCausalLM.from_pretrained(MODEL_MAP[args.model_nm], **accl_args)
+    if args.decoding_algo == "cad_head_mask":
+        with open(args.head_score_file, "r") as file:
+            stable_block_list =  json.loads(file.readline())
+        stable_block_list = [(l[0], np.mean(l[1])) for l in stable_block_list.items()]
+        stable_block_list = sorted(stable_block_list, key=lambda x: x[1], reverse=True)
+        block_list = [[int(ll) for ll in l[0].split("-")] for l in stable_block_list][:args.mask_topk]
+    else:
+        block_list = None
 
     def tokenize_one_query(one_query, tokenizer, model_nm, dataset_nm):
         if model_nm == 'llama2':
@@ -145,15 +136,9 @@ def main(args):
                 js_divergences = None
                 js_divergences_output = None
         elif args.decoding_algo == "cad_head_mask":
-            with open(args.head_score_file, "r") as file:
-                stable_block_list =  json.loads(file.readline())
-            stable_block_list = [(l[0], np.mean(l[1])) for l in stable_block_list.items()]
-            stable_block_list = sorted(stable_block_list, key=lambda x: x[1], reverse=True)
-            block_list = [[int(ll) for ll in l[0].split("-")] for l in stable_block_list][:args.mask_topk]
-
             output = model.generate(one_tokenized_query_prompt['input_ids'].to(device),
                                     **gen_config, output_scores=args.output_scores, output_logits=args.output_logits,
-                                    cad_alpha=args.cad_alpha, cad_kv_sharing=args.cad_kv_sharing, 
+                                    cad_alpha=args.cad_alpha, cad_kv_sharing=args.cad_kv_sharing,
                                     return_js_divergence=args.return_js_divergence, block_list=block_list)
             if args.output_scores:
                 output_scores = {"scores": [tok_scores.to('cpu').tolist() for tok_scores in output.scores]}
@@ -198,7 +183,7 @@ def main(args):
     pred_metric = {}
     bert_res = bert_metric.compute(predictions=predictions, references=references, model_type="microsoft/deberta-xlarge-mnli")
     pred_metric["bertscore"] = {k: np.mean(bert_res[k]) for k in ["precision", "recall", "f1"]}
-    pred_metric["factkb"] = compute_factkb(predictions=predictions, articles=articles)
+    pred_metric["factkb"] = compute_factkb_score(predictions=predictions, articles=articles)
     rouge = evaluate.load('rouge')
     rouge_res = rouge.compute(predictions=predictions, references=references,
                               rouge_types=['rouge1', 'rouge2', 'rougeL'], use_aggregator=True)
