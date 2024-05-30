@@ -5,6 +5,7 @@ import logging
 import numpy as np
 import os
 import random
+import string
 import torch
 from tqdm import trange
 from transformers import AutoTokenizer
@@ -27,8 +28,8 @@ DATASET_HEADERS = {"cnn_dailymail": {"source": "article", "summary": "highlights
                    "xsum": {"source": "document", "summary": "summary"}}
 PROMPT_MAP = {("llama2", "cnn_dailymail"): ["""Article: {}""", """\nSummarize the article. Summary:"""],
               ("llama2", "xsum"): ["""Article: {}""", """Summarize the article in one sentence. Summary:"""],
-              ("llama2-chat", "cnn_dailymail"): ["""[INST] <<SYS>> Summarize the article.<</SYS>>""", """{}""", """[/INST] Summary:"""],
-              ("llama2-chat", "xsum"): ["""[INST] <<SYS>> Summarize the article in one sentence.<</SYS>>""", """{}""", """[/INST] Summary:"""]}
+              ("llama2-chat", "cnn_dailymail"): ["""[INST]<<SYS>>\nSummarize the article.\n<</SYS>>\n""", """{}""", """[/INST]Summary:"""],
+              ("llama2-chat", "xsum"): ["""[INST]<<SYS>>\nSummarize the article in one sentence.\n<</SYS>>\n""", """{}""", """[/INST]Summary:"""]}
 
 
 def main(args):
@@ -51,7 +52,7 @@ def main(args):
     if args.log_wandb:
         wandb.config.update(gen_config, allow_val_change=True)
 
-    device = torch.device('cuda')
+    # device = torch.device('cuda')
     tokenizer = AutoTokenizer.from_pretrained(MODEL_MAP[args.model_nm])
 
     if args.dataset_nm == "cnn_dailymail":
@@ -68,9 +69,9 @@ def main(args):
     PROMPT_FORMAT = PROMPT_MAP[(args.model_nm, args.dataset_nm)]
 
     num_gpus = torch.cuda.device_count()
-    accl_args = {"attn_implementation": "sdpa",
+    accl_args = {"attn_implementation": "flash_attention_2" if args.fp16 else "sdpa",
                  "device_map": "auto",
-                 "offload_folder": f"/tmp/ameya/2024/offload/{MODEL_MAP[args.model_nm]}-{args.dataset_nm}{random.randint(0,5)}/",
+                 "offload_folder": f"/tmp/ameya/2024/offload/{MODEL_MAP[args.model_nm]}-{args.dataset_nm}{''.join(random.choices(string.ascii_uppercase + string.digits, k=5))}/",
                  "max_memory": {i: f"46GiB" for i in range(num_gpus)},
                  }
     if args.fp16:
@@ -79,6 +80,7 @@ def main(args):
         wandb.config.update(accl_args)
 
     model = LlamaHeadMaskForCausalLM.from_pretrained(MODEL_MAP[args.model_nm], **accl_args)
+    model.eval()
     if args.decoding_algo == "cad_head_mask":
         with open(args.head_score_file, "r") as file:
             stable_block_list =  json.loads(file.readline())
@@ -116,58 +118,59 @@ def main(args):
     all_predictions = []
     predictions, references, articles = [], [], []
     skipped_queries = 0
-    for ex_id in trange(args.n_samples):
-        one_tokenized_query_prompt = tokenized_prompts[ex_id]
-        if ex_id == 0:
-            logger.info(tokenizer.batch_decode(one_tokenized_query_prompt["input_ids"])[0])
-        if one_tokenized_query_prompt['input_ids'].shape[1] > 4090:
-            logger.debug(f"Skipping query: {ex_id} ({dataset[ex_id]['id']})")
-            skipped_queries += 1
-            continue
-        if args.decoding_algo == "regular":
-            output = model.generate(one_tokenized_query_prompt['input_ids'].to(device),
-                                    **gen_config,
-                                    output_scores=args.output_scores, output_logits=args.output_logits)
-            if args.output_scores:
-                output_scores = {"scores": [tok_scores.to('cpu').tolist() for tok_scores in output.scores]}
-            if args.output_logits:
-                output_logits = {"logits": [tok_logits.to('cpu').tolist() for tok_logits in output.logits]}
-            if args.return_js_divergence:
-                js_divergences = None
-                js_divergences_output = None
-        elif args.decoding_algo == "cad_head_mask":
-            output = model.generate(one_tokenized_query_prompt['input_ids'].to(device),
-                                    **gen_config, output_scores=args.output_scores, output_logits=args.output_logits,
-                                    cad_alpha=args.cad_alpha, cad_kv_sharing=args.cad_kv_sharing,
-                                    return_js_divergence=args.return_js_divergence, block_list=block_list)
-            if args.output_scores:
-                output_scores = {"scores": [tok_scores.to('cpu').tolist() for tok_scores in output.scores]}
-            if args.output_logits:
-                output_logits = {"logits": [tok_logits.to('cpu').tolist() for tok_logits in output.logits],
-                                "base_logits": [tok_logits.to('cpu').tolist() for tok_logits in output.base_logits],
-                                "perturbed_logits": [tok_logits.to('cpu').tolist() for tok_logits in output.perturbed_logits]}
-            if args.return_js_divergence:
-                js_divergences = output.payload['js_divergence']
-                js_divergences_arr.append(np.array(js_divergences).reshape(-1))
-                js_divergences_output = output.payload['js_divergence_output']
-                js_divergences_output_arr.append(np.array(js_divergences_output).reshape(-1))
-        else:
-            raise ValueError(f"Unsupported decoding algorithm: {args.decoding_algo}")
-        
-        one_prediction = {**dataset[ex_id],
-                          'model_output': tokenizer.batch_decode(output.sequences)[0],
-                          'model_prediction': tokenizer.batch_decode(output.sequences[:, one_tokenized_query_prompt['input_ids'].shape[1]:])[0],
-                          'response_scores': output_scores if args.output_scores else None,
-                          'response_logits': output_logits if args.output_logits else None,
-                          'js_divergences': js_divergences if args.return_js_divergence else None,
-                          'js_divergences_output': js_divergences_output if args.return_js_divergence else None,
-                          }
-        all_predictions.append(one_prediction)
-        prediction_text = one_prediction['model_prediction']
-        prediction_text = prediction_text.replace('<span>', '').replace('</span>', '').replace('</s>', '')
-        references.append(dataset[ex_id][DATASET_HEADERS[args.dataset_nm]["summary"]])
-        predictions.append(prediction_text)
-        articles.append(dataset[ex_id][DATASET_HEADERS[args.dataset_nm]["source"]])
+    with torch.no_grad():
+        for ex_id in trange(args.n_samples):
+            one_tokenized_query_prompt = tokenized_prompts[ex_id]
+            if ex_id == 0:
+                logger.info(tokenizer.batch_decode(one_tokenized_query_prompt["input_ids"])[0])
+            if one_tokenized_query_prompt['input_ids'].shape[1] > (gen_config['max_length'] - gen_config['max_new_tokens']):
+                logger.debug(f"Skipping query: {ex_id} ({dataset[ex_id]['id']})")
+                skipped_queries += 1
+                continue
+            if args.decoding_algo == "regular":
+                output = model.generate(one_tokenized_query_prompt['input_ids'].to('cuda'),
+                                        **gen_config,
+                                        output_scores=args.output_scores, output_logits=args.output_logits)
+                if args.output_scores:
+                    output_scores = {"scores": [tok_scores.to('cpu').tolist() for tok_scores in output.scores]}
+                if args.output_logits:
+                    output_logits = {"logits": [tok_logits.to('cpu').tolist() for tok_logits in output.logits]}
+                if args.return_js_divergence:
+                    js_divergences = None
+                    js_divergences_output = None
+            elif args.decoding_algo == "cad_head_mask":
+                output = model.generate(one_tokenized_query_prompt['input_ids'].to('cuda'),
+                                        **gen_config, output_scores=args.output_scores, output_logits=args.output_logits,
+                                        cad_alpha=args.cad_alpha, cad_kv_sharing=args.cad_kv_sharing,
+                                        return_js_divergence=args.return_js_divergence, block_list=block_list)
+                if args.output_scores:
+                    output_scores = {"scores": [tok_scores.to('cpu').tolist() for tok_scores in output.scores]}
+                if args.output_logits:
+                    output_logits = {"logits": [tok_logits.to('cpu').tolist() for tok_logits in output.logits],
+                                    "base_logits": [tok_logits.to('cpu').tolist() for tok_logits in output.base_logits],
+                                    "perturbed_logits": [tok_logits.to('cpu').tolist() for tok_logits in output.perturbed_logits]}
+                if args.return_js_divergence:
+                    js_divergences = output.payload['js_divergence']
+                    js_divergences_arr.append(np.array(js_divergences).reshape(-1))
+                    js_divergences_output = output.payload['js_divergence_output']
+                    js_divergences_output_arr.append(np.array(js_divergences_output).reshape(-1))
+            else:
+                raise ValueError(f"Unsupported decoding algorithm: {args.decoding_algo}")
+            
+            one_prediction = {**dataset[ex_id],
+                            'model_output': tokenizer.batch_decode(output.sequences)[0],
+                            'model_prediction': tokenizer.batch_decode(output.sequences[:, one_tokenized_query_prompt['input_ids'].shape[1]:])[0],
+                            'response_scores': output_scores if args.output_scores else None,
+                            'response_logits': output_logits if args.output_logits else None,
+                            'js_divergences': js_divergences if args.return_js_divergence else None,
+                            'js_divergences_output': js_divergences_output if args.return_js_divergence else None,
+                            }
+            all_predictions.append(one_prediction)
+            prediction_text = one_prediction['model_prediction']
+            prediction_text = prediction_text.replace('<span>', '').replace('</span>', '').replace('</s>', '')
+            references.append(dataset[ex_id][DATASET_HEADERS[args.dataset_nm]["summary"]])
+            predictions.append(prediction_text)
+            articles.append(dataset[ex_id][DATASET_HEADERS[args.dataset_nm]["source"]])
 
     if not os.path.isdir(args.output_dir):
         logger.info(f"Creating output dir: {args.output_dir}")
@@ -179,15 +182,19 @@ def main(args):
         fout.write(out_str)
     logger.info(f"Skipped queries: {skipped_queries}")
 
-    bert_metric = evaluate.load("bertscore")
     pred_metric = {}
-    bert_res = bert_metric.compute(predictions=predictions, references=references, model_type="microsoft/deberta-xlarge-mnli")
+
+    bert_metric = evaluate.load("bertscore")
+    bert_res = bert_metric.compute(predictions=predictions, references=articles, model_type="microsoft/deberta-xlarge-mnli")
     pred_metric["bertscore"] = {k: np.mean(bert_res[k]) for k in ["precision", "recall", "f1"]}
+
     pred_metric["factkb"] = compute_factkb_score(predictions=predictions, articles=articles)
+
     rouge = evaluate.load('rouge')
     rouge_res = rouge.compute(predictions=predictions, references=references,
                               rouge_types=['rouge1', 'rouge2', 'rougeL'], use_aggregator=True)
     pred_metric["rouge"] = rouge_res
+
     if args.return_js_divergence:
         avg_js_divergences_arr = [np.mean(one_js_div) for one_js_div in js_divergences_arr]
         q90_js_divergences_arr = [np.quantile(one_js_div, 0.9) for one_js_div in js_divergences_arr]
@@ -239,6 +246,8 @@ if __name__=='__main__':
     parser.add_argument("--topk", type=int, default=None)
     parser.add_argument("--topp", type=float, default=None)
     parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--max_length", type=int, default=None)
+    parser.add_argument("--max_new_tokens", type=int, default=None)
 
     args_ = parser.parse_args()
     main(args_)

@@ -3,5 +3,7 @@
     "do_sample": true,
     "top_p": 0.9,
     "temperature": 1.0,
+    "max_length": 2048,
+    "max_new_tokens": 200,
     "return_dict_in_generate": true
 }

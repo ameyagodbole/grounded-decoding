@@ -176,7 +176,7 @@ def main(args):
     pred_metric = {}
     bert_res = bert_metric.compute(predictions=predictions, references=references, model_type="microsoft/deberta-xlarge-mnli")
     pred_metric["bertscore"] = {k: np.mean(bert_res[k]) for k in ["precision", "recall", "f1"]}
-    pred_metric["factkb"] = compute_factkb(predictions=predictions, articles=articles)
+    pred_metric["factkb"] = compute_factkb_score(predictions=predictions, articles=articles)
     rouge = evaluate.load('rouge')
     rouge_res = rouge.compute(predictions=predictions, references=references,
                               rouge_types=['rouge1', 'rouge2', 'rougeL'], use_aggregator=True)

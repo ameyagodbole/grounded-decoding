@@ -793,6 +793,7 @@ class LlamaHeadMaskModel(LlamaModel):
     Args:
         config: LlamaConfig
     """
+    _no_split_modules = ["LlamaHeadMaskDecoderLayer"]
 
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
