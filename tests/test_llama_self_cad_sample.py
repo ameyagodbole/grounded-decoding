@@ -100,18 +100,17 @@ def tokenize_one_query(one_query, tokenizer, n_docs=10):
 
 one_tokenized_query_prompt = tokenize_one_query(all_queries[ex_idx], tokenizer, n_docs=n_docs)
 print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Running CAD")
-import pdb; pdb.set_trace()
-causal_output = model.generate(one_tokenized_query_prompt['input_ids'].to(device), 
-                               num_beams=1, do_sample=True, top_p=0.9, temperature=1.0,
-                               return_dict_in_generate=True, output_scores=True, output_logits=True, output_attentions=True,
-                               context_attention_mask=one_tokenized_query_prompt['context_attention_mask'].to(device),
-                               context_attention_weight=0.9, cad_alpha=8.0)
+# causal_output = model.generate(one_tokenized_query_prompt['input_ids'].to(device), 
+#                                num_beams=1, do_sample=True, top_p=0.9, temperature=1.0,
+#                                return_dict_in_generate=True, output_scores=True, output_logits=True, output_attentions=True,
+#                                context_attention_mask=one_tokenized_query_prompt['context_attention_mask'].to(device),
+#                                context_attention_weight=0.9, cad_alpha=8.0)
 
 causal_output = model.generate(one_tokenized_query_prompt['input_ids'].to(device), 
                                num_beams=1, do_sample=False, top_p=None, temperature=None,
-                               return_dict_in_generate=True, output_scores=True, output_logits=True, output_attentions=True,
+                               return_dict_in_generate=True, output_scores=True, output_logits=True, output_attentions=False,
                                context_attention_mask=one_tokenized_query_prompt['context_attention_mask'].to(device),
-                               context_attention_weight=0.9, cad_alpha=8.0)
+                               context_attention_weight=0.9, cad_alpha=8.0, cad_kv_sharing='total')
 # print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} Running default")
 # default_output = model.generate(one_tokenized_query_prompt['input_ids'].to(device),
 #                                 num_beams=1, do_sample=False, top_p=None, temperature=None,
@@ -119,3 +118,4 @@ causal_output = model.generate(one_tokenized_query_prompt['input_ids'].to(device
 
 # assert all([torch.all(bl == cl) for bl, cl in zip(default_output.scores, causal_output.scores)])
 # assert all([torch.all(bl == cl) for bl, cl in zip(default_output.logits, causal_output.base_logits)])
+import pdb; pdb.set_trace()
