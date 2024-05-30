@@ -1,0 +1,34 @@
+program: scripts/nqswap/run_headmask.py
+name: nq-swap-llama2-chat-cad_head_mask-v2
+method: grid
+parameters:
+  cad_alpha:
+    values: [0.5, 0.75, 1.0, 1.5, 2.0]
+  mask_topk:
+    values: [20, 50, 100]
+command:
+- "python"
+- ${program}
+- ${args}
+- "--model_nm"
+- "llama2-chat"
+- "--dataset_nm"
+- "nq-swap"
+- "--decoding_algo"
+- "cad_head_mask"
+- "--generation_config"
+- "configs/greedy_config.json"
+- "--data_file"
+- "/home/ameya/ml-knowledge-conflicts/datasets/substitution-sets/MRQANaturalQuestionsTrain-corpus-substitution.jsonl"
+- "--output_dir"
+- "/home/ameya/grounded-decoding/outputs/nqswap/"
+- "--cad_kv_sharing"
+- "total"
+- "--head_score_file"
+- "configs/retrieval_head_score/llama-2-7b-80k.json"
+- "--return_js_divergence"
+- "--n_samples"
+- "500"
+- "--shuffle_seed"
+- "2605"
+- "--log_wandb"

@@ -22,12 +22,12 @@ logger.debug("Imports done")
 
 
 MODEL_MAP = {"llama2-chat": "meta-llama/Llama-2-7b-chat-hf"}
-PROMPT_MAP = {("llama2-chat", "nq"): ["""[INST] <<SYS>> Give the answer to the user question based on the provided HTML passage. Output just the answer span.<</SYS>>""",
+PROMPT_MAP = {("llama2-chat", "nq"): ["""[INST]<<SYS>>\nAnswer the question based on the provided HTML passage. Output just the answer span.\n<</SYS>>\n""",
                                       """{}""",
-                                      """Question: {} [/INST] Answer:"""],
-                ("llama2-chat", "nq-swap"): ["""[INST] <<SYS>> Give the answer to the user question based on the provided HTML passage. Output just the answer span.<</SYS>>""",
+                                      """Question: {}[/INST]Answer:"""],
+              ("llama2-chat", "nq-swap"): ["""[INST]<<SYS>>\nAnswer the question based on the provided HTML passage. Output just the answer span.\n<</SYS>>\n""",
                                       """{}""",
-                                      """Question: {} [/INST] Answer:"""]}
+                                      """Question: {}[/INST]Answer:"""]}
 
 
 def main(args):
@@ -50,7 +50,7 @@ def main(args):
     if args.log_wandb:
         wandb.config.update(gen_config, allow_val_change=True)
 
-    device = torch.device('cuda')
+    # device = torch.device('cuda')
     tokenizer = AutoTokenizer.from_pretrained(MODEL_MAP[args.model_nm])
 
     with open(args.data_file) as fin:
@@ -107,7 +107,7 @@ def main(args):
             skipped_queries += 1
             continue
         if args.decoding_algo == "regular":
-            output = model.generate(one_tokenized_query_prompt['input_ids'].to(device),
+            output = model.generate(one_tokenized_query_prompt['input_ids'].to('cuda'),
                                     **gen_config,
                                     output_scores=args.output_scores, output_logits=args.output_logits)
             if args.output_scores:
@@ -118,13 +118,10 @@ def main(args):
                 js_divergences = None
                 js_divergences_output = None
         elif args.decoding_algo == "cad_head_mask":
-            output = model.generate(one_tokenized_query_prompt['input_ids'].to(device),
+            output = model.generate(one_tokenized_query_prompt['input_ids'].to('cuda'),
                                     **gen_config, output_scores=args.output_scores, output_logits=args.output_logits,
                                     cad_alpha=args.cad_alpha, cad_kv_sharing=args.cad_kv_sharing,
                                     return_js_divergence=args.return_js_divergence, block_list=block_list)
-            output_logits = {"logits": [tok_logits.to('cpu').tolist() for tok_logits in output.logits],
-                             "base_logits": [tok_logits.to('cpu').tolist() for tok_logits in output.base_logits],
-                             "perturbed_logits": [tok_logits.to('cpu').tolist() for tok_logits in output.perturbed_logits]}
             if args.output_scores:
                 output_scores = {"scores": [tok_scores.to('cpu').tolist() for tok_scores in output.scores]}
             if args.output_logits:
