@@ -1,6 +1,6 @@
 #! /bin/bash
-#SBATCH --job-name=cnn-cad_head_mask-fp16-sweep-zmbae8vt-agent
-#SBATCH --output=logs/cnn-llama2-chat-cad_head_mask-sweep-zmbae8vt-%A-%a.out
+#SBATCH --job-name=wikibios-cad_head_mask-fp16-sweep-z72lgrn0-agent
+#SBATCH --output=logs/wikibios-llama2-chat-cad_head_mask-sweep-z72lgrn0-%A-%a.out
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:a6000:1
 #SBATCH --exclude=glamor-ruby
@@ -38,4 +38,7 @@ export TOKENIZERS_PARALLELISM=false
 # max_gen_len=200
 # wandb agent ameyag416/grounded-decoding/zmf4icsl
 # fp16 + max_gen_len=200
-wandb agent ameyag416/grounded-decoding/zmbae8vt
+# wandb agent ameyag416/grounded-decoding/zmbae8vt
+
+# wiki_bios cad_head_mask + total kv_cache_sharing + log js_divergences + fp16 + max_gen_len=200
+wandb agent ameyag416/grounded-decoding/z72lgrn0

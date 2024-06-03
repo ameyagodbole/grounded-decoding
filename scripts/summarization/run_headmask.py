@@ -14,6 +14,7 @@ import evaluate
 import wandb
 from src.head_mask_llama import LlamaHeadMaskForCausalLM
 from src.eval_utils import compute_factkb_score
+from src.data_utils import preprocess_wikibio
 
 logging.basicConfig(
     format="%(asctime)s - %(module)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -25,11 +26,14 @@ logger.debug("Imports done")
 MODEL_MAP = {"llama2": "meta-llama/Llama-2-7b-hf",
              "llama2-chat": "meta-llama/Llama-2-7b-chat-hf"}
 DATASET_HEADERS = {"cnn_dailymail": {"source": "article", "summary": "highlights"},
-                   "xsum": {"source": "document", "summary": "summary"}}
+                   "xsum": {"source": "document", "summary": "summary"},
+                   "wiki_bios": {"source": "user_message", "summary": None}}
 PROMPT_MAP = {("llama2", "cnn_dailymail"): ["""Article: {}""", """\nSummarize the article. Summary:"""],
               ("llama2", "xsum"): ["""Article: {}""", """Summarize the article in one sentence. Summary:"""],
               ("llama2-chat", "cnn_dailymail"): ["""[INST]<<SYS>>\nSummarize the article.\n<</SYS>>\n""", """{}""", """[/INST]Summary:"""],
-              ("llama2-chat", "xsum"): ["""[INST]<<SYS>>\nSummarize the article in one sentence.\n<</SYS>>\n""", """{}""", """[/INST]Summary:"""]}
+            #   ("llama2-chat", "cnn_dailymail"): ["""Summarize the following news within 116 words:""", """{}""", """\noutput:"""],
+              ("llama2-chat", "xsum"): ["""[INST]<<SYS>>\nSummarize the article in one sentence.\n<</SYS>>\n""", """{}""", """[/INST]Summary:"""],
+              ("llama2-chat", "wiki_bios"): ["""[INST]<<SYS>>\nAnswer the user query based on the information provided in the web snippets.\n<</SYS>>\n""", """{}""", """[/INST] Bio:"""]}
 
 
 def main(args):
@@ -47,6 +51,9 @@ def main(args):
     for k in gen_config:
         if k in args and getattr(args, k) is not None:
             gen_config[k] = getattr(args, k)
+    if args.dataset_nm == 'wiki_bios':
+        logger.warn("Over-riding max_length to 4096.")
+        gen_config['max_length'] = 4096
     logger.info(json.dumps(gen_config, indent=2))
 
     if args.log_wandb:
@@ -59,6 +66,15 @@ def main(args):
         dataset = load_dataset("cnn_dailymail", "3.0.0", split='validation')
     elif args.dataset_nm == "xsum":
         dataset = load_dataset("EdinburghNLP/xsum", split='validation')
+    elif args.dataset_nm == "wiki_bios":
+        dataset = load_dataset("json",
+                               data_files={
+                                   "validation": "data/FActScore/search_results/labeled_you_search.jsonl",
+                                   "test": "data/FActScore/search_results/unlabeled_you_search.jsonl"},
+                               split="validation")
+        dataset = dataset.map(preprocess_wikibio)  # Can pass arguments with `fn_kwargs`
+        dataset = dataset.filter(lambda example: not example['to_drop'])
+        logger.info(f"len(filtered dataset): {len(dataset)}")
     else:
         raise ValueError(f"Unknown dataset {args.dataset_nm}")
     if args.shuffle_seed is not None:
@@ -168,7 +184,8 @@ def main(args):
             all_predictions.append(one_prediction)
             prediction_text = one_prediction['model_prediction']
             prediction_text = prediction_text.replace('<span>', '').replace('</span>', '').replace('</s>', '')
-            references.append(dataset[ex_id][DATASET_HEADERS[args.dataset_nm]["summary"]])
+            if DATASET_HEADERS[args.dataset_nm]["summary"]:
+                references.append(dataset[ex_id][DATASET_HEADERS[args.dataset_nm]["summary"]])
             predictions.append(prediction_text)
             articles.append(dataset[ex_id][DATASET_HEADERS[args.dataset_nm]["source"]])
 
@@ -190,10 +207,11 @@ def main(args):
 
     pred_metric["factkb"] = compute_factkb_score(predictions=predictions, articles=articles)
 
-    rouge = evaluate.load('rouge')
-    rouge_res = rouge.compute(predictions=predictions, references=references,
-                              rouge_types=['rouge1', 'rouge2', 'rougeL'], use_aggregator=True)
-    pred_metric["rouge"] = rouge_res
+    if len(references) > 0:
+        rouge = evaluate.load('rouge')
+        rouge_res = rouge.compute(predictions=predictions, references=references,
+                                rouge_types=['rouge1', 'rouge2', 'rougeL'], use_aggregator=True)
+        pred_metric["rouge"] = rouge_res
 
     if args.return_js_divergence:
         avg_js_divergences_arr = [np.mean(one_js_div) for one_js_div in js_divergences_arr]
@@ -220,7 +238,7 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--model_nm", type=str, choices=["llama2", "llama2-chat"], default="llama2-chat")
-    parser.add_argument("--dataset_nm", type=str, choices=["cnn_dailymail", "xsum"], required=True)
+    parser.add_argument("--dataset_nm", type=str, choices=["cnn_dailymail", "xsum", "wiki_bios"], required=True)
     parser.add_argument("--decoding_algo", type=str, choices=["regular", "cad_head_mask"], required=True)
     parser.add_argument("--generation_config", type=str, required=True)
     
