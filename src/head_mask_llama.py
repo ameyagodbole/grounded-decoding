@@ -374,11 +374,27 @@ class LlamaAttention(nn.Module):
             attn_weights = attn_weights + causal_mask
         
         # Implement head masking with block-list
-        if 'block_list' in kwargs:
-            logger.warning_once(f"[Line 378]: Using LlamaAttention forward with block-list: {kwargs['block_list']}")
+        if 'block_list' in kwargs and 'context_causal_mask' in kwargs:
+            logger.warning_once(f"[Line 378]: Using LlamaAttention forward with block-list: {kwargs['block_list']} and `context_causal_mask`")
             for h in kwargs['block_list']:
-                if self.layer_idx==h[0]:                 
-                    attn_weights[:, h[1], :, :] = 0
+                if self.layer_idx==h[0]:
+                    assert kwargs['context_causal_mask'].shape[1] == 1
+                    context_causal_mask = kwargs['context_causal_mask'][:,0,:,:key_states.shape[-2]]
+                    if attention_mask is not None:
+                        assert attention_mask.shape[1] == 1
+                        base_causal_mask = attention_mask[:, 0, :, : key_states.shape[-2]]
+                        attn_weights[:,h[1], :, :] = attn_weights[:,h[1], :, :] + context_causal_mask - base_causal_mask
+                    else:
+                        logger.warning_once("No causal mask is being applied. Verify that the `context_causal_mask` is also non-causal.")
+                        attn_weights[:,h[1], :, :] = attn_weights[:,h[1], :, :] + context_causal_mask                    
+        elif 'block_list' in kwargs:
+            logger.warning_once(f"[Line 391]: Using LlamaAttention forward with block-list: {kwargs['block_list']}")
+            for h in kwargs['block_list']:
+                if self.layer_idx==h[0]:  
+                    if attention_mask is not None:
+                        attn_weights[:, h[1], :, :] = causal_mask[:, 0, ...]
+                    else:
+                        attn_weights[:, h[1], :, :] = 0
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -460,8 +476,10 @@ class LlamaFlashAttention2(LlamaAttention):
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         # Implement head masking with block-list
+        if 'block_list' in kwargs and 'context_causal_mask' in kwargs:
+            raise NotImplementedError("`flash_attention_2` is not supported with `context_attention_mask`")
         if 'block_list' in kwargs:
-            logger.warning_once(f"[Line 464]: Using LlamaFlashAttention2 forward with block-list: {kwargs['block_list']}")
+            logger.warning_once(f"[Line 482]: Using LlamaFlashAttention2 forward with block-list: {kwargs['block_list']}")
             for h in kwargs['block_list']:
                 if self.layer_idx==h[0]:
                     query_states[:,h[1], :, :] = 0
@@ -643,6 +661,7 @@ class LlamaSdpaAttention(LlamaAttention):
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 cache_position=cache_position,
+                **kwargs
             )
 
         bsz, q_len, _ = hidden_states.size()
@@ -675,8 +694,16 @@ class LlamaSdpaAttention(LlamaAttention):
             causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
 
         # Implement head masking with block-list
-        if 'block_list' in kwargs:
-            logger.warning_once(f"[Line 679]: Using LlamaSdpaAttention forward with block-list: {kwargs['block_list']}")
+        if 'block_list' in kwargs and 'context_causal_mask' in kwargs:
+            logger.warning_once(f"[Line 698]: Using LlamaSdpaAttention forward with block-list: {kwargs['block_list']} and `context_causal_mask`")
+            assert causal_mask is not None
+            for h in kwargs['block_list']:
+                if self.layer_idx==h[0]:
+                    if causal_mask.shape[1] == 1:
+                        causal_mask = causal_mask.expand(-1, query_states.shape[1], -1, -1).clone()
+                    causal_mask[:,h[1], :, :] = kwargs['context_causal_mask'][:,0,:,:key_states.shape[-2]]
+        elif 'block_list' in kwargs:
+            logger.warning_once(f"[Line 706]: Using LlamaSdpaAttention forward with block-list: {kwargs['block_list']}")
             for h in kwargs['block_list']:
                 if self.layer_idx==h[0]:
                     query_states[:,h[1], :, :] = 0
@@ -808,6 +835,8 @@ class LlamaHeadMaskModel(LlamaModel):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
+        context_attention_mask: Optional[torch.Tensor] = None,
+        context_attention_weight: Optional[float] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -856,6 +885,11 @@ class LlamaHeadMaskModel(LlamaModel):
             position_ids = cache_position.unsqueeze(0)
 
         causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position)
+        if context_attention_mask is not None:
+            context_causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position,
+                                                           context_attention_mask, context_attention_weight)
+        else:
+            context_causal_mask = None
 
         # embed positions
         hidden_states = inputs_embeds
@@ -866,7 +900,10 @@ class LlamaHeadMaskModel(LlamaModel):
         next_decoder_cache = None
 
         if block_list:
-            kwargs={"block_list":block_list}
+            if context_causal_mask is not None:
+                kwargs={"block_list": block_list, "context_causal_mask": context_causal_mask}
+            else:
+                kwargs={"block_list": block_list}
         else:
             kwargs={}
 
@@ -929,8 +966,11 @@ class LlamaHeadMaskModel(LlamaModel):
     # KV cache is used. This is an issue for torch.compile which then recaptures cudagraphs at each decode steps due to the dynamic shapes.
     # (`recording cudagraph tree for symint key 13`, etc.), which is VERY slow. A workaround is `@torch.compiler.disable`, but this prevents using
     # `fullgraph=True`. See more context in https://github.com/huggingface/transformers/pull/29114
-    def _update_causal_mask(self, attention_mask, input_tensor, cache_position):
+    def _update_causal_mask(self, attention_mask, input_tensor, cache_position,
+                            context_attention_mask=None, context_attention_weight=None):
         if self.config._attn_implementation == "flash_attention_2":
+            if context_attention_mask is not None:
+                raise NotImplementedError("`flash_attention_2` is not supported with `context_attention_mask`")
             if attention_mask is not None and 0.0 in attention_mask:
                 return attention_mask
             return None
@@ -950,6 +990,14 @@ class LlamaHeadMaskModel(LlamaModel):
             causal_mask = torch.triu(causal_mask, diagonal=1)
         causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
         causal_mask = causal_mask[None, None, :, :].expand(input_tensor.shape[0], 1, -1, -1)
+        
+        if context_attention_mask is not None:
+            causal_mask = causal_mask.clone()
+            assert context_attention_mask.dim() == 2
+            mask_length = context_attention_mask.shape[-1]
+            padding_mask = causal_mask[..., :mask_length].eq(0.0) * context_attention_mask[:, None, None, :].eq(1.0)
+            causal_mask[..., :mask_length] = causal_mask[..., :mask_length].masked_fill(padding_mask, torch.log(torch.FloatTensor([context_attention_weight])).item())
+
         if attention_mask is not None:
             causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
             if attention_mask.dim() == 2:
@@ -1003,6 +1051,8 @@ class LlamaHeadMaskForCausalLM(LlamaForCausalLM):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
+        context_attention_mask: Optional[torch.Tensor] = None,
+        context_attention_weight: Optional[float] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -1049,6 +1099,8 @@ class LlamaHeadMaskForCausalLM(LlamaForCausalLM):
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            context_attention_mask=context_attention_mask,
+            context_attention_weight=context_attention_weight,
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
@@ -1093,3 +1145,93 @@ class LlamaHeadMaskForCausalLM(LlamaForCausalLM):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
+    def prepare_inputs_for_generation(
+        self, input_ids, past_key_values=None, attention_mask=None, context_attention_mask=None, context_attention_weight=None, inputs_embeds=None, cache_position=None, **kwargs
+    ):
+        # With static cache, the `past_key_values` is None
+        # TODO joao: standardize interface for the different Cache classes and remove of this if
+        has_static_cache = False
+        if past_key_values is None:
+            past_key_values = getattr(getattr(self.model.layers[0], "self_attn", {}), "past_key_value", None)
+            has_static_cache = past_key_values is not None
+
+        past_length = 0
+        if past_key_values is not None:
+            if isinstance(past_key_values, Cache):
+                past_length = cache_position[0] if cache_position is not None else past_key_values.get_seq_length()
+                max_cache_length = (
+                    torch.tensor(past_key_values.get_max_length(), device=input_ids.device)
+                    if past_key_values.get_max_length() is not None
+                    else None
+                )
+                cache_length = past_length if max_cache_length is None else torch.min(max_cache_length, past_length)
+            # TODO joao: remove this `else` after `generate` prioritizes `Cache` objects
+            else:
+                cache_length = past_length = past_key_values[0][0].shape[2]
+                max_cache_length = None
+
+            # Keep only the unprocessed tokens:
+            # 1 - If the length of the attention_mask exceeds the length of input_ids, then we are in a setting where
+            # some of the inputs are exclusively passed as part of the cache (e.g. when passing input_embeds as
+            # input)
+            if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
+                input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
+            # 2 - If the past_length is smaller than input_ids', then input_ids holds all input tokens. We can discard
+            # input_ids based on the past_length.
+            elif past_length < input_ids.shape[1]:
+                input_ids = input_ids[:, past_length:]
+            # 3 - Otherwise (past_length >= input_ids.shape[1]), let's assume input_ids only has unprocessed tokens.
+
+            # If we are about to go beyond the maximum cache length, we need to crop the input attention mask.
+            if (
+                max_cache_length is not None
+                and attention_mask is not None
+                and cache_length + input_ids.shape[1] > max_cache_length
+            ):
+                attention_mask = attention_mask[:, -max_cache_length:]
+            if (
+                max_cache_length is not None
+                and context_attention_mask is not None
+                and cache_length + input_ids.shape[1] > max_cache_length
+            ):
+                context_attention_mask = context_attention_mask[:, -max_cache_length:]
+
+        position_ids = kwargs.get("position_ids", None)
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past_key_values:
+                position_ids = position_ids[:, -input_ids.shape[1] :]
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            # The `contiguous()` here is necessary to have a static stride during decoding. torchdynamo otherwise
+            # recompiles graphs as the stride of the inputs is a guard. Ref: https://github.com/huggingface/transformers/pull/29114
+            # TODO: use `next_tokens` directly instead.
+            model_inputs = {"input_ids": input_ids.contiguous()}
+
+        input_length = position_ids.shape[-1] if position_ids is not None else input_ids.shape[-1]
+        if cache_position is None:
+            cache_position = torch.arange(past_length, past_length + input_length, device=input_ids.device)
+        else:
+            cache_position = cache_position[-input_length:]
+
+        if has_static_cache:
+            past_key_values = None
+
+        model_inputs.update(
+            {
+                "position_ids": position_ids,
+                "cache_position": cache_position,
+                "past_key_values": past_key_values,
+                "use_cache": kwargs.get("use_cache"),
+                "attention_mask": attention_mask,
+                "context_attention_mask": context_attention_mask,
+                "context_attention_weight": context_attention_weight,
+            }
+        )
+        return model_inputs

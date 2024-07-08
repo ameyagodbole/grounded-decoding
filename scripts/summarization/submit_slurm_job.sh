@@ -1,6 +1,6 @@
 #! /bin/bash
-#SBATCH --job-name=wikibios-cad_head_mask-fp16-sweep-z72lgrn0-agent
-#SBATCH --output=logs/wikibios-llama2-chat-cad_head_mask-sweep-z72lgrn0-%A-%a.out
+#SBATCH --job-name=wikibios-cad_head_mask-fp16-sweep-ajz0hcvn-agent
+#SBATCH --output=logs/wikibios-llama2-chat-cad_head_mask-sweep-ajz0hcvn-%A-%a.out
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:a6000:1
 #SBATCH --exclude=glamor-ruby
@@ -39,6 +39,32 @@ export TOKENIZERS_PARALLELISM=false
 # wandb agent ameyag416/grounded-decoding/zmf4icsl
 # fp16 + max_gen_len=200
 # wandb agent ameyag416/grounded-decoding/zmbae8vt
+# fp16 + max_gen_len=200 + clamp_logit_diff
+# wandb agent ameyag416/grounded-decoding/kmnz5ksa
+# cad_head_context_mask + fp16
+# wandb agent ameyag416/grounded-decoding/7fqbfg5r
+
+# xsum cad_head_mask + total kv_cache_sharing + fp16 + max_gen_len=200 + clamp_logit_diff
+# wandb agent ameyag416/grounded-decoding/2j09zr2t
+# cad_head_context_mask + fp16
+# wandb agent ameyag416/grounded-decoding/5nnuvv19
+
 
 # wiki_bios cad_head_mask + total kv_cache_sharing + log js_divergences + fp16 + max_gen_len=200
-wandb agent ameyag416/grounded-decoding/z72lgrn0
+# wandb agent ameyag416/grounded-decoding/z72lgrn0
+# restart with prompt that limits output length
+# wandb agent ameyag416/grounded-decoding/jxbqaitn
+# fp16 + max_gen_len=200 + clamp_logit_diff
+# wandb agent ameyag416/grounded-decoding/e1gwe0yw
+# cad_head_context_mask + fp16
+# wandb agent ameyag416/grounded-decoding/bu9snjv8
+
+######
+# V3 #
+######
+
+# cnn_dailymail
+# wandb agent ameyag416/grounded-decoding/o23cpsu4
+
+# wiki_bios
+wandb agent ameyag416/grounded-decoding/ajz0hcvn

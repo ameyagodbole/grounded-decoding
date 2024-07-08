@@ -1,11 +1,15 @@
 program: scripts/summarization/run_headmask.py
-name: xsum-llama2-chat-cad_head_mask-v2
+name: xsum-llama2-chat-cad_head_context_mask
 method: grid
 parameters:
   cad_alpha:
-    values: [4.0, 2.0, 1.5, 1.0, 0.5, 0.25]
+    values: [0.25, 0.5, 1.0, 1.5, 2.0, 4.0]
+  cad_beta:
+    values: [1e-7, 1e-5, 1e-3, 1e-2, 1e-1, 0.25, 0.5, 0.75]
   mask_topk:
-    values: [10, 20, 50, 100, 150]
+    values: [10, 20, 50, 100]
+  clamp_logit_diff:
+    values: [0, 1]
 command:
 - "python"
 - ${program}
@@ -15,7 +19,7 @@ command:
 - "--dataset_nm"
 - "xsum"
 - "--decoding_algo"
-- "cad_head_mask"
+- "cad_head_context_mask"
 - "--generation_config"
 - "configs/topp_config.json"
 - "--output_dir"
@@ -25,6 +29,7 @@ command:
 - "--head_score_file"
 - "configs/retrieval_head_score/llama-2-7b-80k.json"
 - "--return_js_divergence"
+- "--fp16"
 - "--n_samples"
 - "250"
 - "--shuffle_seed"

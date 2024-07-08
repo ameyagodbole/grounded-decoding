@@ -1,11 +1,17 @@
 program: scripts/summarization/run_headmask.py
-name: wikibios-llama2-chat-cad_head_mask-v3-fp16
-method: grid
+name: wikibios-llama2-chat-cad_head_mask-v3
+method: random
 parameters:
   cad_alpha:
     values: [0.25, 0.5, 1.0, 1.5, 2.0, 4.0]
   mask_topk:
     values: [10, 20, 50, 100]
+  clamp_logit_diff:
+    values: [0, 1]
+  decoding_algo:
+    values: ["cad_head_context_mask", "cad_head_mask"]
+  cad_beta:
+    values: [1e-7, 1e-5, 1e-3, 1e-2, 1e-1, 0.25, 0.5, 0.75]
 command:
 - "python"
 - ${program}
@@ -14,8 +20,6 @@ command:
 - "llama2-chat"
 - "--dataset_nm"
 - "wiki_bios"
-- "--decoding_algo"
-- "cad_head_mask"
 - "--generation_config"
 - "configs/topp_config.json"
 - "--output_dir"
@@ -34,4 +38,8 @@ command:
 - "0.9"
 - "--temperature"
 - "1.0"
+- "--max_new_tokens"
+- "384"
+- "--max_length"
+- "4096"
 - "--log_wandb"
